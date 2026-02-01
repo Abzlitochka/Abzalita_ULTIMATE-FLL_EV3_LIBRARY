@@ -28,7 +28,7 @@ import "Mods\AdvMtCtrls"
 
 Function InitDualGyro()
   LCD.Clear()
-  LCD.Text(1, 20, 20, 2, "CALIBRATING...")
+  LCD.Text(1, 20, 20, 2, "CALIBRATING")
   Sensor.SetMode(@GyroPort1, 0)
   Sensor.SetMode(@GyroPort2, 0)
   Program.Delay(200)
@@ -443,6 +443,7 @@ Function TurnSmart(in number Angle, in number Spd)
   EndWhile
   Motor.Stop("BC", "true")
 EndFunction
+
 
 
 
