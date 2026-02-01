@@ -1,4 +1,4 @@
-
+You will need 2gyro sensors for correct work with this library
 Also the library contains the stallencounter functions like MoveSmart and RunMotorSmart,it runs until motor cant rotate the stallencounter number that you wrote
 
 
