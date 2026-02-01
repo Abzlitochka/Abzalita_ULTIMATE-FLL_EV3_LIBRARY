@@ -1,0 +1,530 @@
+import "Mods\Gyro"
+import "Mods\Tool"
+import "Mods\AdvMtCtrls"
+
+@GyroPort1 = 2
+@GyroPort2 = 3
+
+@kB = 0
+@kC = 0
+
+@k_friction =14
+@k_mass = 1.3
+@lqr_k1 = 8
+@lqr_k2 = 2
+@lqr_k3 = 3.3
+@lqr_k4 = 0.23
+
+@kp_turn = 2.4
+@kd_turn = 2.1
+
+@kp_sync = 2.0
+@TurnRatio = 2.4
+
+@StopSignal = 0
+@AsyncPort = "A"
+@AsyncSpeed = 0
+@AsyncDeg = 0
+
+Function InitDualGyro()
+  LCD.Clear()
+  LCD.Text(1, 20, 20, 2, "CALIBRATING...")
+  Sensor.SetMode(@GyroPort1, 0)
+  Sensor.SetMode(@GyroPort2, 0)
+  Program.Delay(200)
+  Program.Delay(1000)
+  @g1_offset = Sensor.ReadRawValue(@GyroPort1, 0)
+  @g2_offset = Sensor.ReadRawValue(@GyroPort2, 0)
+  Speaker.Tone(100, 1000, 200)
+  LCD.Text(1, 20, 40, 2, "READY")
+EndFunction
+
+Function GetHeading(out number heading)
+  raw1 = Sensor.ReadRawValue(@GyroPort1, 0) - @g1_offset
+  raw2 = Sensor.ReadRawValue(@GyroPort2, 0) - @g2_offset
+  heading = (raw1 + raw2) / 2
+EndFunction
+
+Function LargeBase()
+  @kB = 1
+  @kC = 1
+EndFunction
+
+Function MiddleBase()
+  @kB = -1
+  @kC = 1
+EndFunction
+
+Function Check()
+  If @kB = 0 Or @kC = 0 Then
+    Speaker.Note(100, "C5", 500)
+    LCD.Clear()
+    LCD.Write(10,10,"ERROR: Base not set!")
+    Program.End()
+  EndIf
+EndFunction
+
+Function Stop()
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function MovePhysics(in number DistDeg, in number TargetAngle, in number MaxSpd)
+  Check()
+  Motor.ResetCount("BC")
+  @DestEnc = DistDeg
+  @OldE = 0
+  PrevSpeed = 0
+  exit = 0
+  
+  StartTime = Time.Get1()
+  
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    
+    EncB = Motor.GetCount("B")
+    EncC = Motor.GetCount("C")
+    
+    AvgEnc = (EncB * @kB + EncC * @kC) / 2
+    
+    ErrorDist = @DestEnc - AvgEnc
+    
+    SpdB = Motor.GetSpeed("B")
+    SpdC = Motor.GetSpeed("C")
+    
+    Velocity = (SpdB * @kB + SpdC * @kC) / 2
+    
+    GetHeading(CurrentGyro)
+    ErrorAngle = TargetAngle - CurrentGyro
+    GyroRate = ErrorAngle - @OldE 
+    @OldE = ErrorAngle
+    
+    U_Feedback = (ErrorDist * @lqr_k1) - (Velocity * @lqr_k2)
+    
+    U_Friction = 0
+    If Math.Abs(U_Feedback) > 1 Then
+       If U_Feedback > 0 Then
+          U_Friction = @k_friction
+       Else
+          U_Friction = 0 - @k_friction
+       EndIf
+    EndIf
+    
+    DesiredAccel = ErrorDist * 0.1 
+    U_Mass = DesiredAccel * @k_mass
+    
+    Linear_U = U_Feedback + U_Friction + U_Mass
+    
+    If Math.Abs(Linear_U) > MaxSpd Then
+       If Linear_U > 0 Then
+          Linear_U = MaxSpd
+       Else
+          Linear_U = 0 - MaxSpd
+       EndIf
+    EndIf
+    
+    Angular_U = (ErrorAngle * @lqr_k3) + (GyroRate * @lqr_k4)
+    
+    PowB = (Linear_U + Angular_U) * @kB
+    PowC = (Linear_U - Angular_U) * @kC
+    
+    Motor.StartPower("B", PowB)
+    Motor.StartPower("C", PowC)
+    
+    
+    If Math.Abs(ErrorDist) < 10 And Math.Abs(Velocity) < 10 Then
+       exit = 1
+    EndIf
+    
+    
+    If DistDeg > 0 And ErrorDist < -40 Then
+       exit = 1
+    ElseIf DistDeg < 0 And ErrorDist > 40 Then
+       exit = 1
+    EndIf
+    
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function TurnDual(in number TargetAngle, in number Spd)
+  Check()
+  @OldE = 0
+  exit = 0
+  Motor.Stop("BC", "false")
+  Program.Delay(50)
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    GetHeading(CurrentGyro)
+    E = TargetAngle - CurrentGyro
+    P = E * @kp_turn
+    D = (E - @OldE) * @kd_turn
+    @OldE = E
+    U = P + D
+    If Math.Abs(U) > Spd Then
+      If U > 0 Then 
+        U = Spd 
+      Else 
+        U = 0 - Spd 
+      EndIf
+    EndIf
+    MinPower = 26
+    If Math.Abs(U) < MinPower Then
+       If U > 0 Then 
+         U = MinPower 
+       Else 
+         U = 0 - MinPower 
+       EndIf
+    EndIf
+    Motor.StartPower("B", U * @kB)
+    NegU = 0 - U
+    Motor.StartPower("C", NegU * @kC)
+    If Math.Abs(E) < 1 Then
+      Motor.Stop("BC", "true")
+      Program.Delay(100) 
+      GetHeading(CheckGyro)
+      If Math.Abs(TargetAngle - CheckGyro) < 1 Then
+         exit = 1
+      EndIf
+    EndIf
+  EndWhile
+  Stop()
+EndFunction
+
+Function SoloR(in number TargetAngle, in number Spd)
+  Check()
+  @OldE = 0
+  exit = 0
+  Motor.Stop("BC", "false")
+  Motor.StartPower("C", 0)
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    GetHeading(CurrentGyro)
+    E = TargetAngle - CurrentGyro
+    P = E * @kp_turn
+    D = (E - @OldE) * @kd_turn
+    @OldE = E
+    U = P + D
+    If Math.Abs(U) > Spd Then
+      If U > 0 Then 
+        U = Spd 
+      Else 
+        U = 0 - Spd 
+      EndIf
+    EndIf
+    MinPower = 18
+    If Math.Abs(U) < MinPower Then
+       If U > 0 Then 
+         U = MinPower 
+       Else 
+         U = 0 - MinPower 
+       EndIf
+    EndIf
+    Motor.StartPower("B", U * @kB)
+    Motor.StartPower("C", 0) 
+    If Math.Abs(E) < 1 Then
+      Motor.Stop("BC", "true")
+      Program.Delay(100)
+      GetHeading(CheckGyro)
+      If Math.Abs(TargetAngle - CheckGyro) < 1 Then
+         exit = 1
+      EndIf
+    EndIf
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function SoloL(in number TargetAngle, in number Spd)
+  Check()
+  @OldE = 0
+  exit = 0
+  Motor.Stop("BC", "false")
+  Motor.StartPower("B", 0)
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    GetHeading(CurrentGyro)
+    E = TargetAngle - CurrentGyro
+    P = E * @kp_turn
+    D = (E - @OldE) * @kd_turn
+    @OldE = E
+    U = P + D
+    If Math.Abs(U) > Spd Then
+      If U > 0 Then 
+        U = Spd 
+      Else 
+        U = 0 - Spd 
+      EndIf
+    EndIf
+    MinPower = 18
+    If Math.Abs(U) < MinPower Then
+       If U > 0 Then 
+         U = MinPower 
+       Else 
+         U = 0 - MinPower 
+       EndIf
+    EndIf
+    Motor.StartPower("B", 0)
+    NegU = 0 - U
+    Motor.StartPower("C", NegU * @kC)
+    If Math.Abs(E) < 1 Then
+      Motor.Stop("BC", "true")
+      Program.Delay(100)
+      GetHeading(CheckGyro)
+      If Math.Abs(TargetAngle - CheckGyro) < 1 Then
+         exit = 1
+      EndIf
+    EndIf
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function RunMotorSmart(in string Port, in number Power, in number LimitDeg)
+  Motor.ResetCount(Port)
+  Motor.StartPower(Port, Power)
+  Program.Delay(150)
+  StallCounter = 0
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    CurrentDeg = Math.Abs(Motor.GetCount(Port))
+    If CurrentDeg >= LimitDeg Then
+       exit = 1
+    EndIf
+    CurrentSpeed = Math.Abs(Motor.GetSpeed(Port))
+    If CurrentSpeed < 5 Then
+       StallCounter = StallCounter + 1
+    Else
+       StallCounter = 0
+    EndIf
+    If StallCounter > 10 Then
+       exit = 1
+    EndIf
+    Program.Delay(20)
+  EndWhile
+  Motor.Stop(Port, "true")
+EndFunction
+
+Sub _AsyncMotorSub
+  RunMotorSmart(@AsyncPort, @AsyncSpeed, @AsyncDeg)
+EndSub
+
+Function RunMotorAsync(in string Port, in number Power, in number LimitDeg)
+  @AsyncPort = Port
+  @AsyncSpeed = Power
+  @AsyncDeg = LimitDeg
+  Thread.Run = _AsyncMotorSub
+EndFunction
+
+Function MotorHoldPID(in string Port)
+  Motor.ResetCount(Port)
+  TargetHold = 0
+  kp_hold = 2.0 
+  Motor.StartPower(Port, 0)
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    Current = Motor.GetCount(Port)
+    Error = TargetHold - Current
+    Power = Error * kp_hold
+    If Math.Abs(Power) > 100 Then
+       If Power > 0 Then 
+         Power = 100 
+       Else 
+         Power = -100 
+       EndIf
+    EndIf
+    Motor.StartPower(Port, Power)
+    If Buttons.Current = "E" Then
+       exit = 1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop(Port, "false")
+EndFunction
+
+Function MoveSmart(in number DistDeg, in number Spd)
+  Check()
+  Motor.ResetCount("BC")
+  Dir = 1
+  If DistDeg < 0 Then
+    Dir = -1
+  EndIf
+  Target = Math.Abs(DistDeg)
+  StallCounter = 0
+  Motor.StartPower("B", Spd * Dir * @kB)
+  Motor.StartPower("C", Spd * Dir * @kC)
+  Program.Delay(150) 
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    EncB = Math.Abs(Motor.GetCount("B"))
+    EncC = Math.Abs(Motor.GetCount("C"))
+    Avg = (EncB + EncC) / 2
+    Error = EncB - EncC
+    Correction = Error * @kp_sync
+    PowB = (Spd - Correction) * Dir * @kB
+    PowC = (Spd + Correction) * Dir * @kC
+    Motor.StartPower("B", PowB)
+    Motor.StartPower("C", PowC)
+    If Avg >= Target Then
+       exit = 1
+    EndIf
+    SpdB = Math.Abs(Motor.GetSpeed("B"))
+    SpdC = Math.Abs(Motor.GetSpeed("C"))
+    If (SpdB + SpdC) / 2 < 5 Then
+       StallCounter = StallCounter + 1
+    Else
+       StallCounter = 0
+    EndIf
+    If StallCounter > 10 Then
+       exit = 1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function TurnSmart(in number Angle, in number Spd)
+  Check()
+  Motor.ResetCount("BC")
+  TargetMotorDeg = Math.Abs(Angle * @TurnRatio)
+  Dir = 1
+  If Angle < 0 Then
+    Dir = -1
+  EndIf
+  StallCounter = 0
+  Motor.StartPower("B", Spd * Dir * @kB)
+  NegSpd = 0 - Spd
+  Motor.StartPower("C", NegSpd * Dir * @kC)
+  Program.Delay(150)
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    EncB = Math.Abs(Motor.GetCount("B"))
+    EncC = Math.Abs(Motor.GetCount("C"))
+    Avg = (EncB + EncC) / 2
+    Error = EncB - EncC
+    Correction = Error * @kp_sync
+    PowB = (Spd - Correction) * Dir * @kB
+    NegVal = 0 - (Spd + Correction)
+    PowC = NegVal * Dir * @kC
+    Motor.StartPower("B", PowB)
+    Motor.StartPower("C", PowC)
+    If Avg >= TargetMotorDeg Then
+       exit = 1
+    EndIf
+    SpdB = Math.Abs(Motor.GetSpeed("B"))
+    SpdC = Math.Abs(Motor.GetSpeed("C"))
+    If (SpdB + SpdC) / 2 < 5 Then
+       StallCounter = StallCounter + 1
+    Else
+       StallCounter = 0
+    EndIf
+    If StallCounter > 10 Then
+       exit = 1
+    EndIf
+    Program.Delay(10)
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function SquareToLine(in number Speed, in number PortL, in number PortR, in number Threshold)
+  Check()
+  Motor.StartPower("B", Speed * @kB)
+  Motor.StartPower("C", Speed * @kC)
+  StateB = 1 
+  StateC = 1
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    ValL = Sensor.ReadPercent(PortL)
+    ValR = Sensor.ReadPercent(PortR)
+    If StateB = 1 And ValL < Threshold Then
+       Motor.Stop("B", "true")
+       StateB = 0
+    EndIf
+    If StateC = 1 And ValR < Threshold Then
+       Motor.Stop("C", "true")
+       StateC = 0
+    EndIf
+    If StateB = 0 And StateC = 0 Then
+       exit = 1
+    EndIf
+  EndWhile
+  Speaker.Tone(50, 2000, 50) 
+EndFunction
+
+Function DriveToLine(in number SensorPort, in number TargetAngle, in number Speed, in number Threshold)
+  Check()
+  @OldE = 0
+  exit = 0
+  While exit = 0
+    If @StopSignal = 1 Then
+       exit = 1
+    EndIf
+    GetHeading(CurrentGyro)
+    E = TargetAngle - CurrentGyro
+    P = E * @lqr_k1
+    D = (E - @OldE) * @lqr_k2
+    @OldE = E
+    Correction = P + D
+    PowB = (Speed - Correction) * @kB
+    PowC = (Speed + Correction) * @kC
+    Motor.StartPower("B", PowB)
+    Motor.StartPower("C", PowC)
+    Val = Sensor.ReadPercent(SensorPort)
+    If Val < Threshold Then
+       exit = 1
+    EndIf
+  EndWhile
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function SquareToWall(in number TimeMs, in number Speed)
+  Check()
+  Motor.StartPower("B", Speed * @kB)
+  Motor.StartPower("C", Speed * @kC)
+  StartTime = Time.Get1()
+  While Time.Get1() - StartTime < TimeMs
+     If @StopSignal = 1 Then
+        Motor.Stop("BC", "true")
+        StartTime = 0 
+     EndIf
+  EndWhile
+  Motor.Stop("BC", "false")
+  Program.Delay(200)
+  Motor.Stop("BC", "true")
+EndFunction
+
+Function WaitForStart()
+  LCD.Clear()
+  LCD.Text(1, 20, 20, 2, "READY TO START")
+  LCD.Text(1, 20, 50, 1, "Press CENTER")
+  Speaker.Note(100, "C5", 200)
+  While Buttons.Current <> "E"
+    Program.Delay(50)
+  EndWhile
+  While Buttons.Current = "E"
+    Program.Delay(50)
+  EndWhile
+  Speaker.Tone(100, 2000, 200)
+  Program.Delay(500)
+EndFunction
