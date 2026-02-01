@@ -1,3 +1,7 @@
+
+Also the library contains the stallencounter functions like MoveSmart and RunMotorSmart,it runs until motor cant rotate the stallencounter number that you wrote
+
+
 You will need the OFDL mods block for it link:https://github.com/ofdl-robotics-tw/EV3-CLEV3R-Modules
 
 For the tuning lqr:
